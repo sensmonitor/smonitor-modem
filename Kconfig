@@ -41,4 +41,24 @@ menu "SensMonitor modem"
         default 4
         range 0 39
 
+    config SMONITOR_MODEM_UART_BAUD_RATE
+        int "Modem UART baud rate"
+        default 9600
+        range 1200 921600
+
+    config SMONITOR_MODEM_UART_RX_BUFFER_SIZE
+        int "Modem UART RX buffer size"
+        default 4096
+        range 1024 16384
+
+    config SMONITOR_MODEM_UART_TX_BUFFER_SIZE
+        int "Modem UART TX buffer size"
+        default 2048
+        range 512 8192
+
+    config SMONITOR_MODEM_LTE_BAND
+        int "Preferred LTE/NB-IoT band"
+        default 20
+        range 1 85
+
 endmenu

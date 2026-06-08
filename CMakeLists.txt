@@ -4,5 +4,5 @@ idf_component_register(
         "src/boards/lilygo_t_sim7000g.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "src"
-    REQUIRES driver esp_event esp_netif
+    REQUIRES driver esp_event esp_netif espressif__esp_modem
 )
