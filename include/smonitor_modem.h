@@ -38,11 +38,18 @@ typedef struct {
     bool registered;
 } smonitor_modem_signal_t;
 
+typedef struct {
+    double latitude;
+    double longitude;
+    bool valid;
+} smonitor_modem_location_t;
+
 esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config);
 esp_err_t smonitor_modem_connect(uint32_t timeout_ms);
 esp_err_t smonitor_modem_disconnect(void);
 smonitor_modem_state_t smonitor_modem_get_state(void);
 esp_err_t smonitor_modem_get_signal(smonitor_modem_signal_t *signal);
+esp_err_t smonitor_modem_get_location(smonitor_modem_location_t *location);
 
 #ifdef __cplusplus
 }

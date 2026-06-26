@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -16,6 +17,22 @@
 #include "sdkconfig.h"
 #include "smonitor_modem_internal.h"
 
+#ifndef CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER
+#define CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER 1
+#endif
+
+#ifndef CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS
+#define CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS 15000
+#endif
+
+#ifndef CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS
+#define CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS 15
+#endif
+
+#ifndef CONFIG_SMONITOR_MODEM_GPS_RETRY_DELAY_MS
+#define CONFIG_SMONITOR_MODEM_GPS_RETRY_DELAY_MS 15000
+#endif
+
 static const char *TAG = "smonitor_modem";
 static const EventBits_t CONNECTED_BIT = BIT0;
 static const EventBits_t DISCONNECTED_BIT = BIT1;
@@ -23,10 +40,38 @@ static const EventBits_t FAILED_BIT = BIT2;
 
 static smonitor_modem_state_t state = SMONITOR_MODEM_STATE_STOPPED;
 static smonitor_modem_config_t modem_config;
+static smonitor_modem_location_t cached_location;
 static esp_modem_dce_t *dce;
 static esp_netif_t *ppp_netif;
 static EventGroupHandle_t events;
 static int32_t last_ppp_event;
+
+typedef struct {
+    const char *name;
+    esp_err_t (*configure_radio)(void);
+    esp_err_t (*read_location)(smonitor_modem_location_t *location);
+} smonitor_modem_model_ops_t;
+
+typedef struct {
+    int run_status;
+    int fix_status;
+    double latitude;
+    double longitude;
+    double hdop;
+    double pdop;
+    double vdop;
+    int satellites_in_view;
+    int gps_satellites_used;
+    int glonass_satellites_used;
+    int cn0_max;
+    bool has_hdop;
+    bool has_pdop;
+    bool has_vdop;
+    bool has_satellites_in_view;
+    bool has_gps_satellites_used;
+    bool has_glonass_satellites_used;
+    bool has_cn0_max;
+} sim7000_gnss_info_t;
 
 static const char *ppp_event_name(int32_t event_id)
 {
@@ -152,7 +197,222 @@ static esp_err_t run_at_retry(const char *command, int attempts)
     return result;
 }
 
-static esp_err_t configure_radio(void)
+static const char *next_csv_field(const char **cursor, char *field,
+                                  size_t field_size)
+{
+    const char *start = *cursor;
+    if (start == NULL || *start == '\0' || *start == '\r' || *start == '\n') {
+        return NULL;
+    }
+
+    const char *end = start;
+    while (*end != '\0' && *end != ',' && *end != '\r' && *end != '\n') {
+        ++end;
+    }
+
+    const size_t length = end - start;
+    const size_t copy_length =
+        length < field_size - 1 ? length : field_size - 1;
+    memcpy(field, start, copy_length);
+    field[copy_length] = '\0';
+
+    *cursor = *end == ',' ? end + 1 : end;
+    return field;
+}
+
+static bool parse_int_field(const char *field, int *value)
+{
+    if (field == NULL || field[0] == '\0') {
+        return false;
+    }
+    char *end = NULL;
+    const long parsed = strtol(field, &end, 10);
+    if (end == field) {
+        return false;
+    }
+    *value = (int)parsed;
+    return true;
+}
+
+static bool parse_double_field(const char *field, double *value)
+{
+    if (field == NULL || field[0] == '\0') {
+        return false;
+    }
+    char *end = NULL;
+    const double parsed = strtod(field, &end);
+    if (end == field) {
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
+
+static bool parse_cgnsinf_response(const char *response,
+                                   sim7000_gnss_info_t *info)
+{
+    const char *line = strstr(response, "+CGNSINF:");
+    if (line == NULL) {
+        return false;
+    }
+
+    line += strlen("+CGNSINF:");
+    while (*line == ' ') {
+        ++line;
+    }
+
+    memset(info, 0, sizeof(*info));
+
+    const char *cursor = line;
+    char field_value[32] = {};
+    for (int field = 0;
+         next_csv_field(&cursor, field_value, sizeof(field_value)) != NULL;
+         ++field) {
+        switch (field) {
+        case 0:
+            parse_int_field(field_value, &info->run_status);
+            break;
+        case 1:
+            parse_int_field(field_value, &info->fix_status);
+            break;
+        case 3:
+            parse_double_field(field_value, &info->latitude);
+            break;
+        case 4:
+            parse_double_field(field_value, &info->longitude);
+            break;
+        case 10:
+            info->has_hdop = parse_double_field(field_value, &info->hdop);
+            break;
+        case 11:
+            info->has_pdop = parse_double_field(field_value, &info->pdop);
+            break;
+        case 12:
+            info->has_vdop = parse_double_field(field_value, &info->vdop);
+            break;
+        case 14:
+            info->has_satellites_in_view =
+                parse_int_field(field_value, &info->satellites_in_view);
+            break;
+        case 15:
+            info->has_gps_satellites_used =
+                parse_int_field(field_value, &info->gps_satellites_used);
+            break;
+        case 16:
+            info->has_glonass_satellites_used =
+                parse_int_field(field_value, &info->glonass_satellites_used);
+            break;
+        case 18:
+            info->has_cn0_max =
+                parse_int_field(field_value, &info->cn0_max);
+            break;
+        default:
+            break;
+        }
+    }
+
+    return true;
+}
+
+static bool cgnsinf_has_fix(const sim7000_gnss_info_t *info,
+                            smonitor_modem_location_t *location)
+{
+    if (info->run_status != 1 || info->fix_status != 1) {
+        return false;
+    }
+
+    location->latitude = info->latitude;
+    location->longitude = info->longitude;
+    location->valid = true;
+    return true;
+}
+
+static void log_gnss_diagnostics(int attempt, const sim7000_gnss_info_t *info)
+{
+    const int satellites_in_view =
+        info->has_satellites_in_view ? info->satellites_in_view : -1;
+    const int gps_used =
+        info->has_gps_satellites_used ? info->gps_satellites_used : -1;
+    const int glonass_used =
+        info->has_glonass_satellites_used ? info->glonass_satellites_used : -1;
+    const int cn0_max = info->has_cn0_max ? info->cn0_max : -1;
+    const double hdop = info->has_hdop ? info->hdop : -1.0;
+    const double pdop = info->has_pdop ? info->pdop : -1.0;
+    const double vdop = info->has_vdop ? info->vdop : -1.0;
+
+    ESP_LOGI(TAG,
+             "GNSS status (%d/%d): run=%d fix=%d, sats_view=%d, gps_used=%d, "
+             "glonass_used=%d, cn0_max=%d, hdop=%.1f, pdop=%.1f, vdop=%.1f",
+             attempt, CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS,
+             info->run_status, info->fix_status, satellites_in_view,
+             gps_used, glonass_used, cn0_max, hdop, pdop, vdop);
+}
+
+static esp_err_t sim7000_read_location(smonitor_modem_location_t *location)
+{
+    ESP_RETURN_ON_FALSE(location != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "Location output is required");
+    memset(location, 0, sizeof(*location));
+
+#if CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER
+    esp_err_t antenna_power_result =
+        run_at_retry("AT+SGPIO=0,4,1,1\r", 3);
+    if (antenna_power_result == ESP_OK) {
+        ESP_LOGI(TAG, "SIM7000 GPS antenna power enabled");
+    } else {
+        ESP_LOGW(TAG, "Failed to enable SIM7000 GPS antenna power: %s",
+                 esp_err_to_name(antenna_power_result));
+    }
+#endif
+
+    ESP_RETURN_ON_ERROR(run_at_retry("AT+CGNSPWR=1\r", 3), TAG,
+                        "Failed to enable SIM7000 GNSS");
+
+    if (CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS > 0) {
+        ESP_LOGI(TAG, "Waiting %" PRIu32 " ms for GNSS startup",
+                 (uint32_t)CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS);
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS));
+    }
+
+    esp_err_t result = ESP_FAIL;
+    for (int attempt = 1;
+         attempt <= CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS;
+         ++attempt) {
+        char response[256] = {};
+        result = esp_modem_at(dce, "AT+CGNSINF\r", response, 3000);
+        if (result == ESP_OK) {
+            sim7000_gnss_info_t gnss_info = {};
+            if (parse_cgnsinf_response(response, &gnss_info)) {
+                log_gnss_diagnostics(attempt, &gnss_info);
+                if (cgnsinf_has_fix(&gnss_info, location)) {
+                    ESP_LOGI(TAG,
+                             "GPS location: latitude=%.6f, longitude=%.6f",
+                             location->latitude, location->longitude);
+                    return ESP_OK;
+                }
+            } else {
+                ESP_LOGW(TAG, "Failed to parse CGNSINF response: %s",
+                         response);
+            }
+        } else {
+            ESP_LOGW(TAG, "CGNSINF failed (%d/%d): %s", attempt,
+                     CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS,
+                     esp_err_to_name(result));
+        }
+
+        ESP_LOGI(TAG, "Waiting for GPS location... (%d/%d)", attempt,
+                 CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS);
+        if (attempt < CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS) {
+            vTaskDelay(pdMS_TO_TICKS(CONFIG_SMONITOR_MODEM_GPS_RETRY_DELAY_MS));
+        }
+    }
+
+    memset(location, 0, sizeof(*location));
+    location->valid = false;
+    return result == ESP_OK ? ESP_ERR_TIMEOUT : result;
+}
+
+static esp_err_t sim7000_configure_radio(void)
 {
     char command[48] = {};
     ESP_RETURN_ON_ERROR(run_at_retry("AT+CEREG=0\r", 3), TAG,
@@ -214,6 +474,39 @@ static esp_err_t configure_radio(void)
     return ESP_OK;
 }
 
+static const smonitor_modem_model_ops_t sim7000_model = {
+    .name = "SIM7000",
+    .configure_radio = sim7000_configure_radio,
+    .read_location = sim7000_read_location,
+};
+
+static const smonitor_modem_model_ops_t *model_ops(void)
+{
+#if CONFIG_SMONITOR_MODEM_MODEL_SIM7000
+    return &sim7000_model;
+#else
+    return NULL;
+#endif
+}
+
+static void cache_startup_location(const smonitor_modem_model_ops_t *ops)
+{
+    memset(&cached_location, 0, sizeof(cached_location));
+
+    if (ops == NULL || ops->read_location == NULL) {
+        ESP_LOGW(TAG, "GPS location is not supported by this modem model");
+        return;
+    }
+
+    const esp_err_t result = ops->read_location(&cached_location);
+    if (result != ESP_OK) {
+        memset(&cached_location, 0, sizeof(cached_location));
+        cached_location.valid = false;
+        ESP_LOGW(TAG, "GPS location not available: %s; using 0,0",
+                 esp_err_to_name(result));
+    }
+}
+
 esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG,
@@ -223,6 +516,7 @@ esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config)
 
     state = SMONITOR_MODEM_STATE_STARTING;
     modem_config = *config;
+    memset(&cached_location, 0, sizeof(cached_location));
 
     ESP_RETURN_ON_ERROR(smonitor_lilygo_t_sim7000g_power_init(), TAG,
                         "Failed to initialize board power control");
@@ -299,7 +593,11 @@ esp_err_t smonitor_modem_connect(uint32_t timeout_ms)
     ESP_RETURN_ON_ERROR(smonitor_lilygo_t_sim7000g_power_on(), TAG,
                         "Failed to power on modem");
 
-    ESP_LOGI(TAG, "Initializing esp_modem for SIM7000");
+    const smonitor_modem_model_ops_t *ops = model_ops();
+    ESP_RETURN_ON_FALSE(ops != NULL, ESP_ERR_NOT_SUPPORTED, TAG,
+                        "Unsupported modem model");
+
+    ESP_LOGI(TAG, "Initializing esp_modem for %s", ops->name);
     dce = esp_modem_new_dev(ESP_MODEM_DCE_SIM7000, &dte_config, &dce_config,
                             ppp_netif);
     ESP_RETURN_ON_FALSE(dce != NULL, ESP_FAIL, TAG,
@@ -318,8 +616,9 @@ esp_err_t smonitor_modem_connect(uint32_t timeout_ms)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     ESP_RETURN_ON_ERROR(result, TAG, "Modem did not respond to AT commands");
-    ESP_RETURN_ON_ERROR(configure_radio(), TAG,
-                        "Failed to configure SIM7000 radio profile");
+    ESP_RETURN_ON_ERROR(ops->configure_radio(), TAG,
+                        "Failed to configure modem radio profile");
+    cache_startup_location(ops);
 
     int rssi = 0;
     int ber = 0;
@@ -380,4 +679,12 @@ esp_err_t smonitor_modem_get_signal(smonitor_modem_signal_t *signal)
         esp_modem_get_signal_quality(dce, &signal->rssi, &signal->ber);
     signal->registered = state == SMONITOR_MODEM_STATE_ONLINE;
     return result;
+}
+
+esp_err_t smonitor_modem_get_location(smonitor_modem_location_t *location)
+{
+    ESP_RETURN_ON_FALSE(location != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "Location output is required");
+    *location = cached_location;
+    return cached_location.valid ? ESP_OK : ESP_ERR_NOT_FOUND;
 }

@@ -15,6 +15,7 @@ the same modem flow.
 - LilyGO T-SIM7000G board profile
 - UART modem connection
 - PPP over cellular data
+- boot-time GNSS/GPS location cache
 - Network modes: Automatic, LTE-M, NB-IoT and GPRS
 
 Default LilyGO T-SIM7000G pins:
@@ -41,9 +42,10 @@ The component:
 5. Powers on the SIM7000 modem.
 6. Creates an `esp_modem` SIM7000 DCE.
 7. Runs the SIM7000 AT configuration sequence.
-8. Switches the modem to PPP data mode.
-9. Waits for `IP_EVENT_PPP_GOT_IP`.
-10. Logs PPP phases, PPP failures, IP address and DNS.
+8. Reads GNSS/GPS location while still in AT command mode.
+9. Switches the modem to PPP data mode.
+10. Waits for `IP_EVENT_PPP_GOT_IP`.
+11. Logs PPP phases, PPP failures, IP address and DNS.
 
 The AT configuration sequence is based on the known-good `modem_console`
 firmware used for LilyGO T-SIM7000G:
@@ -107,6 +109,10 @@ SensMonitor IoT
 | `CONFIG_SMONITOR_MODEM_UART_RX_BUFFER_SIZE` | UART RX buffer size. | `4096` |
 | `CONFIG_SMONITOR_MODEM_UART_TX_BUFFER_SIZE` | UART TX buffer size. | `2048` |
 | `CONFIG_SMONITOR_MODEM_LTE_BAND` | Preferred LTE/NB-IoT band. | `20` |
+| `CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER` | Enable active GPS antenna power with SIM7000 `AT+SGPIO=0,4,1,1`. | enabled |
+| `CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS` | Delay after GNSS power on before the first fix read. | `15000` |
+| `CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS` | Number of `AT+CGNSINF` fix attempts during startup. | `15` |
+| `CONFIG_SMONITOR_MODEM_GPS_RETRY_DELAY_MS` | Delay between GPS fix attempts. | `15000` |
 
 ### Runtime Config
 
@@ -147,7 +153,13 @@ esp_err_t smonitor_modem_connect(uint32_t timeout_ms);
 esp_err_t smonitor_modem_disconnect(void);
 smonitor_modem_state_t smonitor_modem_get_state(void);
 esp_err_t smonitor_modem_get_signal(smonitor_modem_signal_t *signal);
+esp_err_t smonitor_modem_get_location(smonitor_modem_location_t *location);
 ```
+
+`smonitor_modem_connect()` tries to read the GPS location once during startup,
+before switching the modem to PPP data mode. The result is cached for the
+runtime. If no fix is available after 10 attempts, the cached location is
+`0,0` with `valid=false`.
 
 Typical use:
 

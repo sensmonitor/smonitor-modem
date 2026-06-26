@@ -61,4 +61,26 @@ menu "SensMonitor modem"
         default 20
         range 1 85
 
+    config SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER
+        bool "Enable active GPS antenna power"
+        default y
+        help
+            Sends the SIM7000 AT+SGPIO command used by LilyGO T-SIM7000G
+            boards to power the active GPS antenna before reading GNSS data.
+
+    config SMONITOR_MODEM_GPS_INITIAL_DELAY_MS
+        int "GPS initial fix wait after GNSS power on"
+        default 15000
+        range 0 120000
+
+    config SMONITOR_MODEM_GPS_READ_ATTEMPTS
+        int "GPS location read attempts"
+        default 15
+        range 1 60
+
+    config SMONITOR_MODEM_GPS_RETRY_DELAY_MS
+        int "GPS retry delay"
+        default 15000
+        range 1000 120000
+
 endmenu
