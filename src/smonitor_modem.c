@@ -15,7 +15,6 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
-#include "smonitor_modem_internal.h"
 
 #ifndef CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER
 #define CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER 1
@@ -421,7 +420,7 @@ static esp_err_t sim7000_configure_radio(void)
                         "Failed to enable full modem functionality");
 
     snprintf(command, sizeof(command), "AT+IPR=%d\r",
-             CONFIG_SMONITOR_MODEM_UART_BAUD_RATE);
+             modem_config.uart.baud_rate);
     ESP_RETURN_ON_ERROR(run_at_retry(command, 3), TAG,
                         "Failed to configure modem UART rate");
     ESP_RETURN_ON_ERROR(run_at_retry("AT+COPS=0\r", 3), TAG,
@@ -482,11 +481,12 @@ static const smonitor_modem_model_ops_t sim7000_model = {
 
 static const smonitor_modem_model_ops_t *model_ops(void)
 {
-#if CONFIG_SMONITOR_MODEM_MODEL_SIM7000
-    return &sim7000_model;
-#else
-    return NULL;
-#endif
+    switch (modem_config.model) {
+    case SMONITOR_MODEM_MODEL_SIM7000:
+        return &sim7000_model;
+    default:
+        return NULL;
+    }
 }
 
 static void cache_startup_location(const smonitor_modem_model_ops_t *ops)
@@ -513,13 +513,27 @@ esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config)
                         "Modem config is required");
     ESP_RETURN_ON_FALSE(config->apn != NULL && config->apn[0] != '\0',
                         ESP_ERR_INVALID_ARG, TAG, "APN is required");
+    ESP_RETURN_ON_FALSE(config->uart.tx_pin >= 0 &&
+                            config->uart.rx_pin >= 0,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "UART TX and RX pins are required");
+    ESP_RETURN_ON_FALSE(config->uart.baud_rate > 0 &&
+                            config->uart.rx_buffer_size > 0 &&
+                            config->uart.tx_buffer_size > 0,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "UART baud rate and buffer sizes must be positive");
+    ESP_RETURN_ON_FALSE(config->power_on != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "Modem power-on callback is required");
 
     state = SMONITOR_MODEM_STATE_STARTING;
     modem_config = *config;
     memset(&cached_location, 0, sizeof(cached_location));
 
-    ESP_RETURN_ON_ERROR(smonitor_lilygo_t_sim7000g_power_init(), TAG,
-                        "Failed to initialize board power control");
+    if (modem_config.power_init != NULL) {
+        ESP_RETURN_ON_ERROR(
+            modem_config.power_init(modem_config.power_context), TAG,
+            "Failed to initialize board power control");
+    }
 
     esp_err_t result = esp_netif_init();
     ESP_RETURN_ON_FALSE(result == ESP_OK || result == ESP_ERR_INVALID_STATE,
@@ -562,8 +576,7 @@ esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config)
         ESP_LOGI(TAG, "PPP authentication: none");
     }
 
-    ESP_LOGI(TAG, "Configured SIM7000 on LilyGO T-SIM7000G, APN=%s",
-             modem_config.apn);
+    ESP_LOGI(TAG, "Configured cellular modem, APN=%s", modem_config.apn);
     return ESP_OK;
 }
 
@@ -576,21 +589,22 @@ esp_err_t smonitor_modem_connect(uint32_t timeout_ms)
     esp_modem_dce_config_t dce_config =
         ESP_MODEM_DCE_DEFAULT_CONFIG(modem_config.apn);
     esp_modem_dte_config_t dte_config = ESP_MODEM_DTE_DEFAULT_CONFIG();
-    dte_config.uart_config.tx_io_num = CONFIG_SMONITOR_MODEM_UART_TX_PIN;
-    dte_config.uart_config.rx_io_num = CONFIG_SMONITOR_MODEM_UART_RX_PIN;
-    dte_config.uart_config.rts_io_num = CONFIG_SMONITOR_MODEM_UART_RTS_PIN;
-    dte_config.uart_config.cts_io_num = CONFIG_SMONITOR_MODEM_UART_CTS_PIN;
+    dte_config.uart_config.tx_io_num = modem_config.uart.tx_pin;
+    dte_config.uart_config.rx_io_num = modem_config.uart.rx_pin;
+    dte_config.uart_config.rts_io_num = modem_config.uart.rts_pin;
+    dte_config.uart_config.cts_io_num = modem_config.uart.cts_pin;
     dte_config.uart_config.flow_control = ESP_MODEM_FLOW_CONTROL_NONE;
-    dte_config.uart_config.baud_rate = CONFIG_SMONITOR_MODEM_UART_BAUD_RATE;
+    dte_config.uart_config.baud_rate = modem_config.uart.baud_rate;
     dte_config.uart_config.rx_buffer_size =
-        CONFIG_SMONITOR_MODEM_UART_RX_BUFFER_SIZE;
+        modem_config.uart.rx_buffer_size;
     dte_config.uart_config.tx_buffer_size =
-        CONFIG_SMONITOR_MODEM_UART_TX_BUFFER_SIZE;
+        modem_config.uart.tx_buffer_size;
     dte_config.dte_buffer_size =
-        CONFIG_SMONITOR_MODEM_UART_RX_BUFFER_SIZE / 2;
+        modem_config.uart.rx_buffer_size / 2;
 
     ESP_LOGI(TAG, "Power on the modem");
-    ESP_RETURN_ON_ERROR(smonitor_lilygo_t_sim7000g_power_on(), TAG,
+    ESP_RETURN_ON_ERROR(
+        modem_config.power_on(modem_config.power_context), TAG,
                         "Failed to power on modem");
 
     const smonitor_modem_model_ops_t *ops = model_ops();

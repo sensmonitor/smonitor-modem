@@ -71,9 +71,6 @@ smonitor-modem/
     smonitor_modem.h
   src/
     smonitor_modem.c
-    smonitor_modem_internal.h
-    boards/
-      lilygo_t_sim7000g.c
   CMakeLists.txt
   Kconfig
   idf_component.yml
@@ -81,7 +78,7 @@ smonitor-modem/
 
 ## Configuration
 
-Board and modem hardware options are defined by this component in:
+Modem behavior options are defined by this component in:
 
 ```text
 SensMonitor modem
@@ -94,20 +91,10 @@ choice, are supplied by the consuming project. In `smonitor-iot` they are under:
 SensMonitor IoT
 ```
 
-### Hardware Options
+### Modem Options
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `CONFIG_SMONITOR_MODEM_MODEL_SIM7000` | Select SIM7000 modem. | enabled |
-| `CONFIG_SMONITOR_MODEM_BOARD_LILYGO_T_SIM7000G` | Select LilyGO T-SIM7000G board profile. | enabled |
-| `CONFIG_SMONITOR_MODEM_UART_TX_PIN` | ESP32 TX pin connected to modem RX. | `27` |
-| `CONFIG_SMONITOR_MODEM_UART_RX_PIN` | ESP32 RX pin connected to modem TX. | `26` |
-| `CONFIG_SMONITOR_MODEM_UART_RTS_PIN` | UART RTS pin. | `25` |
-| `CONFIG_SMONITOR_MODEM_UART_CTS_PIN` | UART CTS pin. | `23` |
-| `CONFIG_SMONITOR_MODEM_PWRKEY_PIN` | Modem PWRKEY GPIO. | `4` |
-| `CONFIG_SMONITOR_MODEM_UART_BAUD_RATE` | Modem UART baud rate. | `9600` |
-| `CONFIG_SMONITOR_MODEM_UART_RX_BUFFER_SIZE` | UART RX buffer size. | `4096` |
-| `CONFIG_SMONITOR_MODEM_UART_TX_BUFFER_SIZE` | UART TX buffer size. | `2048` |
 | `CONFIG_SMONITOR_MODEM_LTE_BAND` | Preferred LTE/NB-IoT band. | `20` |
 | `CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER` | Enable active GPS antenna power with SIM7000 `AT+SGPIO=0,4,1,1`. | enabled |
 | `CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS` | Delay after GNSS power on before the first fix read. | `15000` |
@@ -124,6 +111,11 @@ typedef struct {
     const char *username;
     const char *password;
     smonitor_modem_network_t network;
+    smonitor_modem_model_t model;
+    smonitor_modem_uart_config_t uart;
+    smonitor_modem_power_callback_t power_init;
+    smonitor_modem_power_callback_t power_on;
+    void *power_context;
 } smonitor_modem_config_t;
 ```
 
@@ -133,6 +125,8 @@ Rules:
 - If `username` is `NULL` or empty, PPP authentication is disabled.
 - If `username` is non-empty, PAP is enabled and `password` is used.
 - `network` selects Automatic, LTE-M, NB-IoT or GPRS mode.
+- The consuming application owns board pin assignments and power sequencing.
+- `power_on` is required; `power_init` is optional.
 
 For the tested LilyGO/SIM7000G profile:
 
@@ -142,6 +136,18 @@ smonitor_modem_config_t config = {
     .username = NULL,
     .password = NULL,
     .network = SMONITOR_MODEM_NETWORK_NB_IOT,
+    .model = SMONITOR_MODEM_MODEL_SIM7000,
+    .uart = {
+        .tx_pin = 27,
+        .rx_pin = 26,
+        .rts_pin = 25,
+        .cts_pin = 23,
+        .baud_rate = 9600,
+        .rx_buffer_size = 4096,
+        .tx_buffer_size = 2048,
+    },
+    .power_init = board_modem_power_init,
+    .power_on = board_modem_power_on,
 };
 ```
 
@@ -158,7 +164,7 @@ esp_err_t smonitor_modem_get_location(smonitor_modem_location_t *location);
 
 `smonitor_modem_connect()` tries to read the GPS location once during startup,
 before switching the modem to PPP data mode. The result is cached for the
-runtime. If no fix is available after 10 attempts, the cached location is
+runtime. If no fix is available after the configured attempts, the cached location is
 `0,0` with `valid=false`.
 
 Typical use:
@@ -169,6 +175,10 @@ smonitor_modem_config_t config = {
     .username = NULL,
     .password = NULL,
     .network = SMONITOR_MODEM_NETWORK_NB_IOT,
+    .model = SMONITOR_MODEM_MODEL_SIM7000,
+    .uart = board_modem_uart_config,
+    .power_init = board_modem_power_init,
+    .power_on = board_modem_power_on,
 };
 
 ESP_ERROR_CHECK(smonitor_modem_init(&config));
@@ -180,7 +190,7 @@ ESP_ERROR_CHECK(smonitor_modem_connect(180000));
 A successful connection should include:
 
 ```text
-smonitor_modem: Configured SIM7000 on LilyGO T-SIM7000G, APN=...
+smonitor_modem: Configured cellular modem, APN=...
 smonitor_modem: PPP authentication: none
 smonitor_modem: Power on the modem
 smonitor_modem: Initializing esp_modem for SIM7000

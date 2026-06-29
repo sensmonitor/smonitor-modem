@@ -25,11 +25,32 @@ typedef enum {
     SMONITOR_MODEM_NETWORK_GPRS,
 } smonitor_modem_network_t;
 
+typedef enum {
+    SMONITOR_MODEM_MODEL_SIM7000 = 0,
+} smonitor_modem_model_t;
+
+typedef esp_err_t (*smonitor_modem_power_callback_t)(void *context);
+
+typedef struct {
+    int tx_pin;
+    int rx_pin;
+    int rts_pin;
+    int cts_pin;
+    int baud_rate;
+    int rx_buffer_size;
+    int tx_buffer_size;
+} smonitor_modem_uart_config_t;
+
 typedef struct {
     const char *apn;
     const char *username;
     const char *password;
     smonitor_modem_network_t network;
+    smonitor_modem_model_t model;
+    smonitor_modem_uart_config_t uart;
+    smonitor_modem_power_callback_t power_init;
+    smonitor_modem_power_callback_t power_on;
+    void *power_context;
 } smonitor_modem_config_t;
 
 typedef struct {
