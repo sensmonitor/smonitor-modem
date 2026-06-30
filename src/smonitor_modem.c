@@ -51,6 +51,48 @@ typedef struct {
     esp_err_t (*read_location)(smonitor_modem_location_t *location);
 } smonitor_modem_model_ops_t;
 
+static const smonitor_modem_profile_t sim7000_profile = {
+    .model = SMONITOR_MODEM_MODEL_SIM7000,
+    .name = "SIM7000",
+    .supports_gprs = true,
+    .supports_lte_m = true,
+    .supports_nb_iot = true,
+    .supports_psm = true,
+    .supports_edrx = true,
+    .supports_gnss = true,
+    .pwrkey_pulse_ms = 1000,
+    .startup_delay_ms = 2000,
+    .pwrkey_active_level = 1,
+};
+
+static const smonitor_modem_profile_t sim7080_profile = {
+    .model = SMONITOR_MODEM_MODEL_SIM7080,
+    .name = "SIM7080",
+    .supports_gprs = false,
+    .supports_lte_m = true,
+    .supports_nb_iot = true,
+    .supports_psm = true,
+    .supports_edrx = true,
+    .supports_gnss = true,
+    .pwrkey_pulse_ms = 1000,
+    .startup_delay_ms = 2000,
+    .pwrkey_active_level = 1,
+};
+
+static const smonitor_modem_profile_t sim7600_profile = {
+    .model = SMONITOR_MODEM_MODEL_SIM7600,
+    .name = "SIM7600",
+    .supports_gprs = true,
+    .supports_lte_m = true,
+    .supports_nb_iot = true,
+    .supports_psm = true,
+    .supports_edrx = true,
+    .supports_gnss = true,
+    .pwrkey_pulse_ms = 500,
+    .startup_delay_ms = 3000,
+    .pwrkey_active_level = 1,
+};
+
 typedef struct {
     int run_status;
     int fix_status;
@@ -431,11 +473,11 @@ static esp_err_t sim7000_configure_radio(void)
      * sequence. SIM7000 stores CAT-M and NB-IoT masks independently.
      */
     snprintf(command, sizeof(command), "AT+CBANDCFG=\"CAT-M\",%d\r",
-             CONFIG_SMONITOR_MODEM_LTE_BAND);
+             CONFIG_SMONITOR_MODEM_LPWA_BAND);
     ESP_RETURN_ON_ERROR(run_at_retry(command, 3), TAG,
                         "Failed to configure CAT-M band");
     snprintf(command, sizeof(command), "AT+CBANDCFG=\"NB-IOT\",%d\r",
-             CONFIG_SMONITOR_MODEM_LTE_BAND);
+             CONFIG_SMONITOR_MODEM_LPWA_BAND);
     ESP_RETURN_ON_ERROR(run_at_retry(command, 3), TAG,
                         "Failed to configure NB-IoT band");
 
@@ -487,6 +529,39 @@ static const smonitor_modem_model_ops_t *model_ops(void)
     default:
         return NULL;
     }
+}
+
+smonitor_modem_model_t smonitor_modem_configured_model(void)
+{
+#if CONFIG_SMONITOR_MODEM_PROFILE_SIM7000
+    return SMONITOR_MODEM_MODEL_SIM7000;
+#elif CONFIG_SMONITOR_MODEM_PROFILE_SIM7080
+    return SMONITOR_MODEM_MODEL_SIM7080;
+#elif CONFIG_SMONITOR_MODEM_PROFILE_SIM7600
+    return SMONITOR_MODEM_MODEL_SIM7600;
+#else
+#error Unsupported SensMonitor modem profile selection
+#endif
+}
+
+const smonitor_modem_profile_t *smonitor_modem_get_profile(
+    smonitor_modem_model_t model)
+{
+    switch (model) {
+    case SMONITOR_MODEM_MODEL_SIM7000:
+        return &sim7000_profile;
+    case SMONITOR_MODEM_MODEL_SIM7080:
+        return &sim7080_profile;
+    case SMONITOR_MODEM_MODEL_SIM7600:
+        return &sim7600_profile;
+    default:
+        return NULL;
+    }
+}
+
+const smonitor_modem_profile_t *smonitor_modem_configured_profile(void)
+{
+    return smonitor_modem_get_profile(smonitor_modem_configured_model());
 }
 
 static void cache_startup_location(const smonitor_modem_model_ops_t *ops)

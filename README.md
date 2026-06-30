@@ -2,31 +2,20 @@
 
 ESP-IDF component for SensMonitor cellular modem connectivity.
 
-This component owns modem board power control, SIM7000 AT initialization, PPP
-network setup, PPP event diagnostics and modem status reporting. It is used by
-`smonitor-iot`, but can also be consumed by another ESP-IDF project that needs
-the same modem flow.
+This component owns modem profiles, SIM7000 AT initialization, PPP network
+setup, PPP event diagnostics and modem status reporting. Board pin assignments
+and concrete power GPIO callbacks are supplied by the consuming application.
 
 ## Current Support
 
 - ESP-IDF `>=5.5,<5.6`
 - ESP32 target
-- SIM7000 modem
-- LilyGO T-SIM7000G board profile
+- SIM7000 modem runtime
+- SIM7000, SIM7080 and SIM7600 modem profile metadata
 - UART modem connection
 - PPP over cellular data
 - boot-time GNSS/GPS location cache
 - Network modes: Automatic, LTE-M, NB-IoT and GPRS
-
-Default LilyGO T-SIM7000G pins:
-
-| Signal | GPIO |
-| --- | ---: |
-| Modem TX | 27 |
-| Modem RX | 26 |
-| Modem RTS | 25 |
-| Modem CTS | 23 |
-| Modem PWRKEY | 4 |
 
 The tested SensMonitor profile uses SIM7000 on NB-IoT band 20 with PPP
 authentication disabled.
@@ -38,8 +27,8 @@ The component:
 1. Initializes ESP-IDF networking and the default event loop.
 2. Creates a PPP network interface.
 3. Configures PPP authentication according to the application config.
-4. Initializes the board PWRKEY GPIO.
-5. Powers on the SIM7000 modem.
+4. Calls the application-provided modem power initialization callback.
+5. Calls the application-provided modem power-on callback.
 6. Creates an `esp_modem` SIM7000 DCE.
 7. Runs the SIM7000 AT configuration sequence.
 8. Reads GNSS/GPS location while still in AT command mode.
@@ -95,7 +84,10 @@ SensMonitor IoT
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `CONFIG_SMONITOR_MODEM_LTE_BAND` | Preferred LTE/NB-IoT band. | `20` |
+| `CONFIG_SMONITOR_MODEM_PROFILE_SIM7000` | Select SIM7000 modem profile. | enabled |
+| `CONFIG_SMONITOR_MODEM_PROFILE_SIM7080` | Select SIM7080 profile metadata. AT runtime not implemented yet. | disabled |
+| `CONFIG_SMONITOR_MODEM_PROFILE_SIM7600` | Select SIM7600 profile metadata. AT runtime not implemented yet. | disabled |
+| `CONFIG_SMONITOR_MODEM_LPWA_BAND` | Preferred LPWA band for NB-IoT/LTE-M. | `20` |
 | `CONFIG_SMONITOR_MODEM_GPS_ENABLE_ANTENNA_POWER` | Enable active GPS antenna power with SIM7000 `AT+SGPIO=0,4,1,1`. | enabled |
 | `CONFIG_SMONITOR_MODEM_GPS_INITIAL_DELAY_MS` | Delay after GNSS power on before the first fix read. | `15000` |
 | `CONFIG_SMONITOR_MODEM_GPS_READ_ATTEMPTS` | Number of `AT+CGNSINF` fix attempts during startup. | `15` |
@@ -136,7 +128,7 @@ smonitor_modem_config_t config = {
     .username = NULL,
     .password = NULL,
     .network = SMONITOR_MODEM_NETWORK_NB_IOT,
-    .model = SMONITOR_MODEM_MODEL_SIM7000,
+    .model = smonitor_modem_configured_model(),
     .uart = {
         .tx_pin = 27,
         .rx_pin = 26,
@@ -155,6 +147,10 @@ smonitor_modem_config_t config = {
 
 ```c
 esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config);
+smonitor_modem_model_t smonitor_modem_configured_model(void);
+const smonitor_modem_profile_t *smonitor_modem_get_profile(
+    smonitor_modem_model_t model);
+const smonitor_modem_profile_t *smonitor_modem_configured_profile(void);
 esp_err_t smonitor_modem_connect(uint32_t timeout_ms);
 esp_err_t smonitor_modem_disconnect(void);
 smonitor_modem_state_t smonitor_modem_get_state(void);
@@ -175,7 +171,7 @@ smonitor_modem_config_t config = {
     .username = NULL,
     .password = NULL,
     .network = SMONITOR_MODEM_NETWORK_NB_IOT,
-    .model = SMONITOR_MODEM_MODEL_SIM7000,
+    .model = smonitor_modem_configured_model(),
     .uart = board_modem_uart_config,
     .power_init = board_modem_power_init,
     .power_on = board_modem_power_on,

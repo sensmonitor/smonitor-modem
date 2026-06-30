@@ -1,7 +1,34 @@
 menu "SensMonitor modem"
 
-    config SMONITOR_MODEM_LTE_BAND
-        int "Preferred LTE/NB-IoT band"
+    choice SMONITOR_MODEM_PROFILE
+        prompt "Modem profile"
+        default SMONITOR_MODEM_PROFILE_SIM7000 if SMONITOR_BOARD_LILYGO_T_SIM7000G
+        default SMONITOR_MODEM_PROFILE_SIM7000
+
+        config SMONITOR_MODEM_PROFILE_SIM7000
+            bool "SIM7000"
+            help
+                SIM7000 profile with GPRS, LTE-M, NB-IoT, PSM, eDRX and GNSS
+                capabilities. This is the currently implemented and tested
+                modem profile.
+
+        config SMONITOR_MODEM_PROFILE_SIM7080
+            bool "SIM7080"
+            depends on !SMONITOR_BOARD_LILYGO_T_SIM7000G
+            help
+                SIM7080 profile placeholder. Capability metadata is exposed,
+                but model-specific AT initialization is not implemented yet.
+
+        config SMONITOR_MODEM_PROFILE_SIM7600
+            bool "SIM7600"
+            depends on !SMONITOR_BOARD_LILYGO_T_SIM7000G
+            help
+                SIM7600 profile placeholder. Capability metadata is exposed,
+                but model-specific AT initialization is not implemented yet.
+    endchoice
+
+    config SMONITOR_MODEM_LPWA_BAND
+        int "Preferred LPWA band"
         default 20
         range 1 85
 

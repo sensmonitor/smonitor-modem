@@ -27,6 +27,8 @@ typedef enum {
 
 typedef enum {
     SMONITOR_MODEM_MODEL_SIM7000 = 0,
+    SMONITOR_MODEM_MODEL_SIM7080,
+    SMONITOR_MODEM_MODEL_SIM7600,
 } smonitor_modem_model_t;
 
 typedef esp_err_t (*smonitor_modem_power_callback_t)(void *context);
@@ -54,6 +56,20 @@ typedef struct {
 } smonitor_modem_config_t;
 
 typedef struct {
+    smonitor_modem_model_t model;
+    const char *name;
+    bool supports_gprs;
+    bool supports_lte_m;
+    bool supports_nb_iot;
+    bool supports_psm;
+    bool supports_edrx;
+    bool supports_gnss;
+    int pwrkey_pulse_ms;
+    int startup_delay_ms;
+    int pwrkey_active_level;
+} smonitor_modem_profile_t;
+
+typedef struct {
     int rssi;
     int ber;
     bool registered;
@@ -66,6 +82,10 @@ typedef struct {
 } smonitor_modem_location_t;
 
 esp_err_t smonitor_modem_init(const smonitor_modem_config_t *config);
+smonitor_modem_model_t smonitor_modem_configured_model(void);
+const smonitor_modem_profile_t *smonitor_modem_get_profile(
+    smonitor_modem_model_t model);
+const smonitor_modem_profile_t *smonitor_modem_configured_profile(void);
 esp_err_t smonitor_modem_connect(uint32_t timeout_ms);
 esp_err_t smonitor_modem_disconnect(void);
 smonitor_modem_state_t smonitor_modem_get_state(void);
